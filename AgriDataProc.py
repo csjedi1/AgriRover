@@ -17,7 +17,7 @@ if __name__ == '__main__':
     haveimg = 0
 
     datfname = QFileDialog.getOpenFileName(None, 'Open data file', '.', 'AgriRover files (*.txt)')
-    imgfname = QFileDialog.getOpenFileName(None, 'Open map file', '.', 'Map img files (*.png)')
+    imgfname = QFileDialog.getOpenFileName(None, 'Open map file', './Map/', 'Map img files (*.png)')
 
     if imgfname[0]:
 

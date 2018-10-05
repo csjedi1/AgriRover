@@ -88,7 +88,7 @@ class MainWinodw(QWidget):
         self.lblPos = QLabel(self)
         self.lblPos.resize(500, 30)
         self.lblPos.move(0,400)
-        self.imgfname = QFileDialog.getOpenFileName(None, 'Open map file', '.', 'Map img files (*.png)')
+        self.imgfname = QFileDialog.getOpenFileName(None, 'Open map file', './Map/', 'Map img files (*.png)')
         if self.imgfname[0]:
             locfilename = self.imgfname[0][:-4] + '.txt'
             self.haveimg = 1
