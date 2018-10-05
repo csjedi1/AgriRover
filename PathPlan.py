@@ -9,6 +9,7 @@ import socket
 from threading import Thread
 import datetime
 
+
 class ServerThread(Thread):
 
     def __init__(self, window):
@@ -35,10 +36,12 @@ class ServerThread(Thread):
                     data = str(conn.recv(4096), encoding="utf-8")
                     if data:
                         self.window.receive_msg(data)
+                    else:
                         disconnected = 1
             finally:
                 print('connection closed')
                 conn.close()
+
 
 class MainWinodw(QWidget):
 
@@ -57,9 +60,11 @@ class MainWinodw(QWidget):
     # 'rover_geolocs' is a list to store the geo location of each pair xy of 'points'
     rover_points = []
     rover_geolocs = []
-
+    NiValue = []
+    stat = []
     data_queue = ''
     data_packet = ''
+
     # origin is at the bottom-left
     # top is at the top-right
     origin_lat = 0
@@ -72,6 +77,7 @@ class MainWinodw(QWidget):
     img_h = 1
     pos = 0  # variable to indicate whether the postion of mouse is get or not
     is_send_locs = 0  #
+
     def __init__(self,storefilename):
         super().__init__()
         currentdate = datetime.datetime.now()
@@ -79,16 +85,20 @@ class MainWinodw(QWidget):
                         str(currentdate.day) + '_' + str(currentdate.time().hour) + '_' + str(currentdate.time().minute) + '_' + \
                         str(currentdate.time().second)
         self.filename_txt = self.filename + '.txt'
+        self.roverimg = QPixmap('rover1.png').scaledToWidth(30)
+        self.lblPos = QLabel(self)
         self.initUI()
         self.setMouseTracking(True)
 
     def initUI(self):
         self.setGeometry(200, 200, 1000, 600)
         self.setWindowTitle('AgriRover Path Plan')
-        self.lblPos = QLabel(self)
+
         self.lblPos.resize(500, 30)
         self.lblPos.move(0,400)
         self.imgfname = QFileDialog.getOpenFileName(None, 'Open map file', './Map/', 'Map img files (*.png)')
+
+        # load the map image and get the location information from txt file
         if self.imgfname[0]:
             locfilename = self.imgfname[0][:-4] + '.txt'
             self.haveimg = 1
@@ -103,7 +113,8 @@ class MainWinodw(QWidget):
                 self.top_lon = float(txtlist[3])
                 self.geo_width = self.top_lon - self.origin_lon
                 self.geo_height = self.top_lat - self.origin_lat
-            self.mapimg = QPixmap(self.imgfname[0]).scaledToWidth(1000)
+            self.raw_mapimg = QPixmap(self.imgfname[0])
+            self.mapimg = self.raw_mapimg.scaledToWidth(1000)
             self.img_w = self.mapimg.width()
             self.img_h = self.mapimg.height()
 
@@ -113,9 +124,10 @@ class MainWinodw(QWidget):
 
         self.show()
 
-    def receive_msg(self,msg):
+    # This function will be called by a TCPServer thread
+    # for dealing with the incoming message from a tcp client
+    def receive_msg(self, msg):
         self.data_queue = self.data_queue + msg
-        valid_packet = 0
         if self.data_queue:
             if len(self.data_queue) != 0:
                 # flag to indicate whether the queue contains no valid data packet
@@ -128,7 +140,6 @@ class MainWinodw(QWidget):
 
             while not flag_process_end:
                 self.data_queue, self.data_packet, valid_packet, process_end = decode_data(self.data_queue)
-
                 if len(self.data_queue) != 0:
                     print('data queue :', self.data_queue)
                     if process_end == 1:
@@ -138,9 +149,42 @@ class MainWinodw(QWidget):
                     flag_process_end = 1  # all received data has been processed
 
                 if valid_packet == 1:
-                    print('received :', data_packet)
-                    with open(self.filename_txt, 'a+') as f:
-                        f.write(str(datetime.datetime.now().time()) + ';' + data_packet + '\r\n')
+                    print('received :', self.data_packet)
+                    self.addRoverPoint()
+                    self.update()
+
+
+    def addRoverPoint(self):
+        file_write_flag = 0
+        templat = float(self.data_packet.split(',')[0])
+        templon = float(self.data_packet.split(',')[1])
+        disp_x = ((templon - self.origin_lon) / self.geo_width) * self.img_w
+        disp_y = self.img_h - ((templat - self.origin_lat) / self.geo_height) * self.img_h
+        tempNivalue = float(self.data_packet.split(',')[3])
+        tempStat = int(self.data_packet.split(',')[4])
+        if len(self.rover_geolocs) == 0:  # if the first package received
+            if templat <= self.top_lat and templat >= self.origin_lat and templon <= self.top_lon and templon >= self.origin_lon:
+                self.rover_geolocs.append([templat, templon])  # 1st is latitude
+                self.NiValue.append(tempNivalue)  # 4th is NiValue
+                self.stat.append(tempStat)  # 5th is NiValue update status
+                self.rover_points.append([disp_x, disp_y])
+                file_write_flag = 1
+        else:
+            if templat != self.rover_geolocs[-1][0] or templon != self.rover_geolocs[-1][1]:  # if location changes, then append the current lists
+                if templat <= self.top_lat and templat >= self.origin_lat and templon <= self.top_lon and templon >= self.origin_lon:
+                    self.rover_geolocs.append([templat, templon])  # 1st is latitude
+                    self.NiValue.append(tempNivalue)  # 4th is NiValue
+                    self.stat.append(tempStat)  # 5th is NiValue update status
+                    self.rover_points.append([disp_x, disp_y])
+                    file_write_flag = 1
+            elif tempNivalue != self.NiValue[-1]:  # if only Nivalue changes, then update the last value of the lists
+                self.NiValue[-1] = tempNivalue
+                self.stat[-1] = tempStat
+                file_write_flag = 1
+
+        if file_write_flag == 1:
+            with open(self.filename_txt, 'a+') as f:
+                f.write(str(datetime.datetime.now().time()) + ';' + self.data_packet + '\r\n')
 
     def mousePressEvent(self, event):  # only mousePressEvent can detect left or right mouse button
 
@@ -180,6 +224,8 @@ class MainWinodw(QWidget):
         painter = QPainter(self)  # self must be added, or there will be nothing painted
         if self.haveimg == 1:  # if map image loaded
             painter.drawPixmap(0, 0, self.mapimg)
+
+        # show the planned path according to mouse clicked points
         if self.pos == 1:  # if pos is available
             pen = QPen(Qt.red, 3, Qt.SolidLine)
             painter.setPen(pen)
@@ -190,6 +236,10 @@ class MainWinodw(QWidget):
                 painter.drawPoint(point[0], point[1])
                 painter.drawLine(prevpoint[0],prevpoint[1],point[0],point[1])
                 prevpoint = point
+
+        # show the rover's actual path
+        if len(self.rover_points) != 0:
+            painter.drawPixmap(self.rover_points[-1][0], self.rover_points[-1][1], self.roverimg)
 
 
 if __name__ == '__main__':
