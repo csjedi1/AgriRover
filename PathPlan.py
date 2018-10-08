@@ -1,7 +1,7 @@
 #coding=utf-8
 
 import sys
-from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog)
+from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog,QDesktopWidget)
 from PyQt5.QtGui import QPainter, QPixmap, QPen
 from PyQt5.QtCore import Qt
 from RoverPathShow import get_ip, decode_data
@@ -73,9 +73,25 @@ class MainWinodw(QWidget):
     geo_height = 0
     top_lat = 0
     top_lon = 0
+
+    # img_w and img_h is full image size under specific magnify value
     img_w = 1
     img_h = 1
-    pos = 0  # variable to indicate whether the postion of mouse is get or not
+
+    # show_w and show_h are original mapimg size after loaded. i.e. the paint size,
+    # these variables are initialized after map image loaded
+    # once the image is loaded, these two values will no longer change
+    # show_w and show_h always equal or smaller than img_w and img_h
+    show_w = 1
+    show_h = 1
+
+    # map image origin of the full image
+    img_origin_x = 0
+    img_origin_y = 0
+
+    magnify = 1.0  # variable to indicate zoom level of current map image, 1 means original size
+    magnify_step = 0.1
+    pos = 0  # variable to indicate whether the postion of mouse is get or not, used in mousemove event
     is_send_locs = 0  #
 
     def __init__(self,storefilename):
@@ -114,15 +130,42 @@ class MainWinodw(QWidget):
                 self.geo_width = self.top_lon - self.origin_lon
                 self.geo_height = self.top_lat - self.origin_lat
             self.raw_mapimg = QPixmap(self.imgfname[0])
-            self.mapimg = self.raw_mapimg.scaledToWidth(1000)
+            sizeObject = QDesktopWidget().screenGeometry(-1)
+            screen_h = sizeObject.height()
+            screen_w = sizeObject.width()
+
+            # set the initial value of mapimg and show_w and show_h
+            self.show_h = int(screen_h*0.8)
+            self.mapimg = self.raw_mapimg.scaledToHeight(self.show_h)
             self.img_w = self.mapimg.width()
             self.img_h = self.mapimg.height()
+            self.show_w = self.img_w
 
             # set the widget size according to map image file
-            self.setGeometry(200, 200, self.img_w, self.img_h+40)
-            self.lblPos.move(0, self.img_h+1)
+            self.setGeometry(20, 30, self.show_w, self.show_h+40)
+            self.lblPos.move(0, self.show_h+1)
 
         self.show()
+
+    # This funtion is to perform map image zoom in an out, only called on wheelevent
+    def magnify_map(self, cursor_x, cursor_y):
+        # magnify the original image
+        self.mapimg = self.raw_mapimg.scaledToHeight(int(self.show_h*self.magnify))
+
+        # update the img_h and img_w with the magnified image
+        self.img_h = self.mapimg.height()
+        self.img_w = self.mapimg.width()
+        self.img_origin_x = int((self.img_w / self.show_w) * cursor_x - cursor_x)
+        self.img_origin_y = int((self.img_h / self.show_h) * cursor_y - cursor_y)
+
+        # crop the required region to be displayed
+        self.mapimg = self.mapimg.copy(self.img_origin_x, self.img_origin_y, self.show_w, self.show_h)
+
+    # convert geo location into pixel coordination
+    def transferloc2pix(self, lat, lon):
+        disp_x = ((lon - self.origin_lon) / self.geo_width) * self.img_w - self.img_origin_x
+        disp_y = self.img_h - ((lat - self.origin_lat) / self.geo_height) * self.img_h - self.img_origin_y
+        return disp_x, disp_y
 
     # This function will be called by a TCPServer thread
     # for dealing with the incoming message from a tcp client
@@ -153,13 +196,11 @@ class MainWinodw(QWidget):
                     self.addRoverPoint()
                     self.update()
 
-
     def addRoverPoint(self):
         file_write_flag = 0
         templat = float(self.data_packet.split(',')[0])
         templon = float(self.data_packet.split(',')[1])
-        disp_x = ((templon - self.origin_lon) / self.geo_width) * self.img_w
-        disp_y = self.img_h - ((templat - self.origin_lat) / self.geo_height) * self.img_h
+        disp_x, disp_y = self.transferloc2pix(templat,templon)
         tempNivalue = float(self.data_packet.split(',')[3])
         tempStat = int(self.data_packet.split(',')[4])
         if len(self.rover_geolocs) == 0:  # if the first package received
@@ -192,13 +233,13 @@ class MainWinodw(QWidget):
         # right mouse for deleting the last point the path
         if event.buttons() & Qt.LeftButton:
             self.pos = 1
-            self.x = event.x()
-            self.y = event.y()
+            self.x = event.x()+self.img_origin_x
+            self.y = event.y()+self.img_origin_y
 
             # save point coordination in 'points' list and 'geolocs' list
-            self.points.append([self.x,self.y])
-            lon = self.origin_lon + (self.x / float(self.img_w)) * self.geo_width
-            lat = self.origin_lat + (float((self.img_h - self.y) / float(self.img_h))) * self.geo_height
+            self.points.append([self.x, self.y])
+            lon = self.origin_lon + ((self.x) / float(self.img_w)) * self.geo_width
+            lat = self.origin_lat + (float(self.img_h - self.y) / float(self.img_h)) * self.geo_height
             self.geolocs.append([lat,lon])
 
         elif event.buttons() & Qt.RightButton:
@@ -211,31 +252,44 @@ class MainWinodw(QWidget):
         self.update()
 
     def mouseMoveEvent(self, event):
-        self.lblPos.setText('pixel : ( x: %d ,y: %d )' % (event.x(), event.y()))
+        self.x = event.x() + self.img_origin_x
+        self.y = event.y() + self.img_origin_y
+        self.lblPos.setText('pixel : ( x: %d ,y: %d )' % (self.x, self.y))
 
         # If map image is present, then change cursor's xy to geo coordinates on the map
         if self.haveimg == 1:
-            lon = self.origin_lon + (event.x() / float(self.img_w))*self.geo_width
-            lat = self.origin_lat + (float((self.img_h-event.y())/float(self.img_h)))*self.geo_height
+            lon = self.origin_lon + (self.x / float(self.img_w))*self.geo_width
+            lat = self.origin_lat + (float((self.img_h-self.y)/float(self.img_h)))*self.geo_height
             self.lblPos.setText('pixel : ( x: %d ,y: %d )' % (event.x(), event.y())+'  loc:(lat:%f, lon:%f)'%(lat,lon))
+        self.update()
+
+    def wheelEvent(self, event):
+        if event.angleDelta().y() > 0:  # if scroll forward
+            self.magnify  = self.magnify + self.magnify_step
+        elif event.angleDelta().y() < 0:  # if scroll backward
+            self.magnify = self.magnify - self.magnify_step
+            if self.magnify < 1.0:
+                self.magnify = 1.0
+        if self.haveimg == 1:
+            self.magnify_map(event.x(), event.y())
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)  # self must be added, or there will be nothing painted
         if self.haveimg == 1:  # if map image loaded
             painter.drawPixmap(0, 0, self.mapimg)
-
         # show the planned path according to mouse clicked points
         if self.pos == 1:  # if pos is available
             pen = QPen(Qt.red, 3, Qt.SolidLine)
             painter.setPen(pen)
-            prevpoint = self.points[0]  # get the first point, which is the start point the path line
-
+            prevloc = self.geolocs[0]  # get the first point, which is the start point the path line
             # the following code is to display each path point and draw lines to connect them
-            for point in self.points:
-                painter.drawPoint(point[0], point[1])
-                painter.drawLine(prevpoint[0],prevpoint[1],point[0],point[1])
-                prevpoint = point
+            for loc in self.geolocs:
+                pixel_x, pixel_y = self.transferloc2pix(loc[0],loc[1])
+                prevloc_x, prevloc_y = self.transferloc2pix(prevloc[0],prevloc[1])
+                painter.drawPoint(pixel_x, pixel_y)
+                painter.drawLine(prevloc_x, prevloc_y, pixel_x, pixel_y)
+                prevloc = loc
 
         # show the rover's actual path
         if len(self.rover_points) != 0:
