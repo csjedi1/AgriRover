@@ -150,14 +150,18 @@ class MainWinodw(QWidget):
     # This funtion is to perform map image zoom in an out, only called on wheelevent
     def magnify_map(self, cursor_x, cursor_y):
         # magnify the original image
+        origin_x_prev = self.img_origin_x
+        origin_y_prev = self.img_origin_y
+        img_w_prev = self.img_w
+        img_h_prev = self.img_h
         self.mapimg = self.raw_mapimg.scaledToHeight(int(self.show_h*self.magnify))
 
         # update the img_h and img_w with the magnified image
         self.img_h = self.mapimg.height()
         self.img_w = self.mapimg.width()
-        self.img_origin_x = int((self.img_w / self.show_w) * cursor_x - cursor_x)
-        self.img_origin_y = int((self.img_h / self.show_h) * cursor_y - cursor_y)
-
+        self.img_origin_x = int((cursor_x+origin_x_prev)*self.img_w/img_w_prev - cursor_x)
+        self.img_origin_y = int((cursor_y + origin_y_prev) * self.img_h / img_h_prev - cursor_y)
+        
         # crop the required region to be displayed
         self.mapimg = self.mapimg.copy(self.img_origin_x, self.img_origin_y, self.show_w, self.show_h)
 
@@ -293,7 +297,18 @@ class MainWinodw(QWidget):
 
         # show the rover's actual path
         if len(self.rover_points) != 0:
-            painter.drawPixmap(self.rover_points[-1][0], self.rover_points[-1][1], self.roverimg)
+            prevloc = self.rover_geolocs[0]
+            # show the rover's current position by a rover image file
+            pixel_x, pixel_y = self.transferloc2pix(self.rover_geolocs[-1][0], self.rover_geolocs[-1][1])
+            painter.drawPixmap(pixel_x, pixel_y, self.roverimg)
+            pen = QPen(Qt.blue, 3, Qt.SolidLine)
+            painter.setPen(pen)
+            for loc in self.rover_geolocs:
+                pixel_x, pixel_y = self.transferloc2pix(loc[0],loc[1])
+                prevloc_x, prevloc_y = self.transferloc2pix(prevloc[0], prevloc[1])
+                painter.drawPoint(pixel_x, pixel_y)
+                painter.drawLine(prevloc_x, prevloc_y, pixel_x, pixel_y)
+                prevloc = loc
 
 
 if __name__ == '__main__':
