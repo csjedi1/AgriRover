@@ -1,15 +1,30 @@
 #coding=utf-8
-
+# The program is used for receving data from 3G module installed on AgriRover
+# The 3G module transmit the data packet by TCP protocal as a client
+# This program runs as a TCP server on port 1234(which can be modified by editing var 'bind_port')
+# The data packet sent by 3G module is as follows:
+# 'STlat,lon,alt,Ni,StatEN'
+# ST is packet header, EN is packet ender
+# After data packet received, the lat,lon and Ni values will be stored into a txt file with the
+# name of AgriRoverDatayyyy_mm_dd_hh_mm_ss.txt
+# the file is formated as follows:
+#   date and time ; lat,lon,alt,stat,Ni1/Ni2/Ni3 CR LF
+#   date and time ; lat,lon,alt,stat,Ni1/Ni2 CR LF
+#   .....
+# each line contains the location information, and for the lines which stat=1, the Nix values is the nth shot's NiValue
+# for the lines which stat=0, it means there is no sample shot, so the Nix value is meaningless, this kind of lines are
+# only used for recording the rover's path
 import sys
-from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog,QDesktopWidget)
-from PyQt5.QtGui import QPainter, QPixmap, QPen
+from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog,QDesktopWidget,QPushButton)
+from PyQt5.QtGui import QPainter, QPixmap, QPen, QFont
 from PyQt5.QtCore import Qt
+
 from RoverPathShow import get_ip, decode_data
 import socket
 from threading import Thread
 import datetime
 
-
+conn=None
 class ServerThread(Thread):
 
     def __init__(self, window):
@@ -60,7 +75,10 @@ class MainWinodw(QWidget):
     # 'rover_geolocs' is a list to store the geo location of each pair xy of 'points'
     rover_points = []
     rover_geolocs = []
-    NiValue = []
+    NiValue = [[]]  # 2-dimension array
+                    # NiValue[i] indicates the ith point's NiValue array
+                    # NiValue[i][j] indicateds the jth shot value in the ith sampling point
+
     stat = []
     data_queue = ''
     data_packet = ''
@@ -103,8 +121,12 @@ class MainWinodw(QWidget):
         self.filename_txt = self.filename + '.txt'
         self.roverimg = QPixmap('rover1.png').scaledToWidth(30)
         self.lblPos = QLabel(self)
+        self.btnSend = QPushButton('Send Path', self)
+        self.btnSnap = QPushButton('Save Pic',self)
+        #self.painter = QPainter(QWidget)
         self.initUI()
         self.setMouseTracking(True)
+
 
     def initUI(self):
         self.setGeometry(200, 200, 1000, 600)
@@ -144,8 +166,32 @@ class MainWinodw(QWidget):
             # set the widget size according to map image file
             self.setGeometry(20, 30, self.show_w, self.show_h+40)
             self.lblPos.move(0, self.show_h+1)
+            self.btnSend.resize(100,30)
+            self.btnSend.move(self.show_w-120,self.show_h+2)
+            self.btnSnap.resize(100,30)
+            self.btnSnap.move(self.show_w-230,self.show_h+2)
+            self.btnSend.clicked.connect(self.send)
+            self.btnSnap.clicked.connect(self.snap)
 
         self.show()
+
+    def snap(self):
+        p = self.grab()
+        p.save('RoverPath.jpg', 'jpg')
+
+    def send(self):
+        global conn
+        if conn:
+            if len(self.geolocs) > 0:
+                conn.send('PA'.encode('utf-8'))
+                for loc in self.geolocs:
+                    strsend = 'ST'+str(loc[0])+','+str(loc[1])+'EN'
+                    conn.send(strsend.encode('utf-8'))
+                conn.send('TH'.encode('utf-8'))
+        else:
+            print('No connection')
+        pass
+
 
     # This funtion is to perform map image zoom in an out, only called on wheelevent
     def magnify_map(self, cursor_x, cursor_y):
@@ -161,7 +207,7 @@ class MainWinodw(QWidget):
         self.img_w = self.mapimg.width()
         self.img_origin_x = int((cursor_x+origin_x_prev)*self.img_w/img_w_prev - cursor_x)
         self.img_origin_y = int((cursor_y + origin_y_prev) * self.img_h / img_h_prev - cursor_y)
-        
+
         # crop the required region to be displayed
         self.mapimg = self.mapimg.copy(self.img_origin_x, self.img_origin_y, self.show_w, self.show_h)
 
@@ -204,35 +250,55 @@ class MainWinodw(QWidget):
         file_write_flag = 0
         templat = float(self.data_packet.split(',')[0])
         templon = float(self.data_packet.split(',')[1])
+        tempalt = float(self.data_packet.split(',')[2])
         disp_x, disp_y = self.transferloc2pix(templat,templon)
         tempNivalue = float(self.data_packet.split(',')[3])
         tempStat = int(self.data_packet.split(',')[4])
+        file_write_flag = 0
         if len(self.rover_geolocs) == 0:  # if the first package received
             if templat <= self.top_lat and templat >= self.origin_lat and templon <= self.top_lon and templon >= self.origin_lon:
                 self.rover_geolocs.append([templat, templon])  # 1st is latitude
-                self.NiValue.append(tempNivalue)  # 4th is NiValue
+                self.NiValue[0].append(tempNivalue)  # 4th is NiValue
                 self.stat.append(tempStat)  # 5th is NiValue update status
                 self.rover_points.append([disp_x, disp_y])
                 file_write_flag = 1
         else:
-            if templat != self.rover_geolocs[-1][0] or templon != self.rover_geolocs[-1][1]:  # if location changes, then append the current lists
+            if abs(templat-self.rover_geolocs[-1][0])>0.000001 or abs(templon-self.rover_geolocs[-1][1])>0.000001:
+            # if location changes, then append the current lists
                 if templat <= self.top_lat and templat >= self.origin_lat and templon <= self.top_lon and templon >= self.origin_lon:
                     self.rover_geolocs.append([templat, templon])  # 1st is latitude
-                    self.NiValue.append(tempNivalue)  # 4th is NiValue
+                    self.NiValue.append([tempNivalue])  # if location changes, it means will create a new array in NiValue
                     self.stat.append(tempStat)  # 5th is NiValue update status
                     self.rover_points.append([disp_x, disp_y])
+                    if tempStat == 1:
+                        file_write_flag = 1  # if this is sample point, then write both the location and nivalue
+                    else:
+                        file_write_flag = 3  # if sample is not taken at new point, then will write 0 to NiValue
+            elif tempStat == 1:  # if only Nivalue changes, then update the last value of the lists
+                self.NiValue[-1].append(tempNivalue)  # append the NiValue to the last array in NiValue[][]
+                if self.stat[-1] == 0:  # if the previously received stat is 0, then a new line will be created
                     file_write_flag = 1
-            elif tempNivalue != self.NiValue[-1]:  # if only Nivalue changes, then update the last value of the lists
-                self.NiValue[-1] = tempNivalue
+                else:
+                    file_write_flag = 2
                 self.stat[-1] = tempStat
-                file_write_flag = 1
 
-        if file_write_flag == 1:
+
+        if file_write_flag != 0:
             with open(self.filename_txt, 'a+') as f:
-                f.write(str(datetime.datetime.now().time()) + ';' + self.data_packet + '\r\n')
+                if file_write_flag == 1:
+                    data_to_write = '\r\n'+str(datetime.datetime.now().time()) + ';' + \
+                                    str(templat)+','+str(templon)+','+str(tempalt)+','+ \
+                                    str(tempStat)+','+str(tempNivalue)
+                elif file_write_flag == 2:
+                    data_to_write = '/'+str(tempNivalue)
+                elif file_write_flag == 3:
+                    data_to_write = '\r\n' + str(datetime.datetime.now().time()) + ';' + \
+                                    str(templat) + ',' + str(templon) + ',' + str(tempalt) + ',' + \
+                                    str(tempStat) + ',' + '0'
+                f.write(data_to_write)
 
     def mousePressEvent(self, event):  # only mousePressEvent can detect left or right mouse button
-
+        global conn
         # left mouse for adding a point in the path
         # right mouse for deleting the last point the path
         if event.buttons() & Qt.LeftButton:
@@ -245,6 +311,7 @@ class MainWinodw(QWidget):
             lon = self.origin_lon + ((self.x) / float(self.img_w)) * self.geo_width
             lat = self.origin_lat + (float(self.img_h - self.y) / float(self.img_h)) * self.geo_height
             self.geolocs.append([lat,lon])
+
 
         elif event.buttons() & Qt.RightButton:
             if self.pos == 1:
@@ -279,6 +346,8 @@ class MainWinodw(QWidget):
         self.update()
 
     def paintEvent(self, event):
+        font = QFont()
+        font.setPointSize(10)
         painter = QPainter(self)  # self must be added, or there will be nothing painted
         if self.haveimg == 1:  # if map image loaded
             painter.drawPixmap(0, 0, self.mapimg)
@@ -286,6 +355,7 @@ class MainWinodw(QWidget):
         if self.pos == 1:  # if pos is available
             pen = QPen(Qt.red, 3, Qt.SolidLine)
             painter.setPen(pen)
+            painter.setRenderHint(QPainter.Antialiasing,True)
             prevloc = self.geolocs[0]  # get the first point, which is the start point the path line
             # the following code is to display each path point and draw lines to connect them
             for loc in self.geolocs:
@@ -296,19 +366,29 @@ class MainWinodw(QWidget):
                 prevloc = loc
 
         # show the rover's actual path
-        if len(self.rover_points) != 0:
+        if len(self.rover_geolocs) != 0:
             prevloc = self.rover_geolocs[0]
             # show the rover's current position by a rover image file
             pixel_x, pixel_y = self.transferloc2pix(self.rover_geolocs[-1][0], self.rover_geolocs[-1][1])
             painter.drawPixmap(pixel_x, pixel_y, self.roverimg)
             pen = QPen(Qt.blue, 3, Qt.SolidLine)
             painter.setPen(pen)
+
+            i = 0
             for loc in self.rover_geolocs:
+                pen = QPen(Qt.blue, 3, Qt.SolidLine)
+                painter.setPen(pen)
                 pixel_x, pixel_y = self.transferloc2pix(loc[0],loc[1])
                 prevloc_x, prevloc_y = self.transferloc2pix(prevloc[0], prevloc[1])
                 painter.drawPoint(pixel_x, pixel_y)
                 painter.drawLine(prevloc_x, prevloc_y, pixel_x, pixel_y)
                 prevloc = loc
+                if self.stat[i] == 1:
+                    pen = QPen(Qt.white, 10, Qt.SolidLine)
+                    painter.setPen(pen)
+                    #painter.sefFont(font)
+                    painter.drawText(pixel_x,pixel_y,str(max(self.NiValue[i])))  # only display the max NiValue at the sampling location
+                i = i+1
 
 
 if __name__ == '__main__':
